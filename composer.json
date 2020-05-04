@@ -1,0 +1,17 @@
+{
+	"name": "obray/http-web-socket-server",
+	"description": "A PHP combined HTTP & Web Socket Server.",
+	"require": {
+		"php": "^7.2.0",
+		"obray/web-socket-server": "^1.0.4",
+		"obray/http": "dev-master"
+	},
+	"autoload": {
+		"psr-4": {
+			"obray\\httpWebSocketServer\\": "src"
+		}
+	},
+	"require-dev": {
+		"phpunit/phpunit": "^8.0"
+	}
+}
