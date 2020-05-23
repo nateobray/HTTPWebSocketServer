@@ -3,7 +3,7 @@
 	"description": "A PHP combined HTTP & Web Socket Server.",
 	"require": {
 		"php": "^7.2.0",
-		"obray/web-socket-server": "^1.0.4",
+		"obray/web-socket-server": "dev-master",
 		"obray/http": "dev-master"
 	},
 	"autoload": {
