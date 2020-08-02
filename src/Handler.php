@@ -6,12 +6,23 @@ class Handler extends \obray\base\SocketServerBaseHandler
 {
     private $cache = [];
     private $activeSockets = [];
-    
+
+    public function __construct($root, $index)
+    {
+        $this->root = $root;
+	$this->index = $index;
+    }
+
     public function onData(string $data, $socket, \obray\SocketServer $server): void
     {
         $time = microtime(true);
         if(empty($data)) return;
-        $request = \obray\http\Transport::decode($data);
+	try {
+        	$request = \obray\http\Transport::decode($data);
+	} catch (\Exception $e) {
+	    print_r($e->getMessage()."\n");
+	    return;
+	}
         $response = $this->getResponse($request);
         $server->qWrite($socket, $response->encode());
         $endTime = microtime(true) - $time;
@@ -19,7 +30,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     /**
      * Get Response
-     * 
+     *
      * attempt to find resource matching the request URI.  If found it returns a
      * transport object as a response.
      */
@@ -39,7 +50,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
         if($response = $this->getRoot($uri, $request)){
             return $response;
         }
-        
+
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
             return $response;
@@ -51,27 +62,29 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     /**
      * Get Static
-     * 
-     * Attempt to find a static file corresponding to the supplied URI and the 
+     *
+     * Attempt to find a static file corresponding to the supplied URI and the
      * allowed MIME types.
      */
 
     private function getStatic(string $uri)
     {
-        if(file_exists(__ROOT__."/static" . $uri)) { 
-            $body = file_get_contents(__ROOT__."/static" . $uri);
-            $size = filesize(__ROOT__."/static" . $uri);    
-            $this->cache[__ROOT__."/static" . $uri] = $body;
+	$file = str_replace('//','/',$this->root."/static" . $uri);
+	$dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+        if(file_exists($file) && !is_dir($file)) {
+            $body = file_get_contents($file);
+            $size = filesize($file);    
+            $this->cache[$file] = $body;
         // load static file with URI plus specified index file
-        } else if (file_exists(__ROOT__."/static" . $uri . __INDEX__)) {
-            $body = file_get_contents(__ROOT__."/static" . $uri . __INDEX__);
-            $size = filesize(__ROOT__."/static" . $uri . __INDEX__);
-            $this->cache[__ROOT__."/static" . $uri . __INDEX__] = $body;
+        } else if (file_exists($dir)) {
+            $body = file_get_contents($dir);
+            $size = filesize($dir);
+            $this->cache[$dir] = $body;
         // can't load file return false
         } else {
             return false;
         }
-        
+
         // build & return response
         $response = new \obray\http\Transport();
         $mime = (new \obray\http\types\MIME())->getSetMimeFromExtension($uri);
@@ -88,7 +101,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     /**
      * Get Root
-     * 
+     *
      * Retrieves the root route
      */
 
@@ -106,7 +119,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     /**
      * Get Defined Route
-     * 
+     *
      * Searches for a defined route the matches specified URI.  It does this by
      * traversing the path (longest to shortest path) finding a matching class
      * and passing the remaining path into the constructor
