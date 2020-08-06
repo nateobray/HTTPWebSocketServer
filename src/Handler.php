@@ -133,7 +133,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
             ++$length;
             if(class_exists('\\routes\\' . implode('\\', $path))){
                 $class = '\\routes\\' . implode('\\', $path);
-                $definedRoute = new $class($remaining);
+                $definedRoute = new $class($remaining, $this);
                 $function = strtolower($request->getMethod());
                 if(method_exists($definedRoute, $function)){
                     return $definedRoute->$function();
@@ -146,14 +146,15 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return false;
     }
 
-    public static function request(string $responseData, int $status=\obray\http\types\Status::OK): \obray\http\Transport
+    public static function response(string $responseData, int $status=\obray\http\types\Status::OK, string $contentType=\obray\http\types\MIME::TEXT): \obray\http\Transport
     {
+        print_r($responseData);
         $response = new \obray\http\Transport();
         $status = new \obray\http\types\Status($status);
         $response->setStatus($status);
         $response->setHeaders(new \obray\http\Headers([
-            "Content-Length" => mb_strlen($responseData),
-            "Content-Type" => "text/plain",
+            "Content-Length" => strlen($responseData),
+            "Content-Type" => $contentType,
             "Connection" => "Keep-Alive"
         ]));
         $response->setBody(\obray\http\Body::decode($responseData));
