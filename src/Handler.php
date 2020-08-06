@@ -45,19 +45,20 @@ class Handler extends \obray\base\SocketServerBaseHandler
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
             return $response;
         }
-
+        
         // check for root route
         if($response = $this->getRoot($uri, $request)){
             return $response;
         }
-
+        
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
+            print_r("get defined\n");
             return $response;
         }
 
         // all else fails return not found response
-        return \obray\HttpWebSocketServer\Handler::request("Not Found", \obray\http\types\Status::NOT_FOUND);
+        return \obray\HttpWebSocketServer\Handler::response("Not Found", \obray\http\types\Status::NOT_FOUND);
     }
 
     /**
@@ -69,11 +70,13 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     private function getStatic(string $uri)
     {
-	$file = str_replace('//','/',$this->root."/static" . $uri);
-	$dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+	    $file = str_replace('//','/',$this->root."/static" . $uri);
+        $dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+        print_r($file."\n");
+        print_r($dir."\n");
         if(file_exists($file) && !is_dir($file)) {
             $body = file_get_contents($file);
-            $size = filesize($file);    
+            $size = filesize($file);
             $this->cache[$file] = $body;
         // load static file with URI plus specified index file
         } else if (file_exists($dir)) {
