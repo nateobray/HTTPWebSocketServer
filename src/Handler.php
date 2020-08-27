@@ -13,7 +13,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 	$this->index = $index;
     }
 
-    public function onData(string $data, $socket, \obray\SocketServer $server): void
+    public function onData(string $data, \obray\interfaces\SocketConnectionInterface $connection): void
     {
         $time = microtime(true);
         if(empty($data)) return;
@@ -24,7 +24,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 	    return;
 	}
         $response = $this->getResponse($request);
-        $server->qWrite($socket, $response->encode());
+        $connection->qWrite($response->encode());
         $endTime = microtime(true) - $time;
     }
 
@@ -164,27 +164,27 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return $response;
     }
 
-    public function onConnect($socket, \obray\SocketServer $server): void
+    public function onConnect(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
     }
 
-    public function onConnected($socket, \obray\SocketServer $server): void
+    public function onConnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
     }
 
-    public function onWriteFailed($data, $socket, \obray\SocketServer $server): void
+    public function onWriteFailed($data, \obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
     }
 
-    public function onDisconnect($socket, \obray\SocketServer $server): void
+    public function onDisconnect(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
     }
 
-    public function onDisconnected($socket, \obray\SocketServer $server): void
+    public function onDisconnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
     }
