@@ -17,12 +17,15 @@ class Handler extends \obray\base\SocketServerBaseHandler
     {
         $time = microtime(true);
         if(empty($data)) return;
-	try {
-        	$request = \obray\http\Transport::decode($data);
-	} catch (\Exception $e) {
-	    print_r($e->getMessage()."\n");
-	    return;
-	}
+        try {
+            $request = \obray\http\Transport::decode($data);
+        } catch (\Exception $e) {
+            print_r($e->getMessage()."\n");
+            return;
+        }
+
+        $this->processMeaningfulHeaders($request->getHeaders(), $connection);
+
         $response = $this->getResponse($request);
         $connection->qWrite($response->encode());
         $endTime = microtime(true) - $time;
@@ -72,17 +75,15 @@ class Handler extends \obray\base\SocketServerBaseHandler
     {
 	    $file = str_replace('//','/',$this->root."/static" . $uri);
         $dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
-        print_r($file."\n");
-        print_r($dir."\n");
         if(file_exists($file) && !is_dir($file)) {
             $body = file_get_contents($file);
-            $size = filesize($file);
-            $this->cache[$file] = $body;
+            $size = strlen($body);
+            //$this->cache[$file] = $body;
         // load static file with URI plus specified index file
         } else if (file_exists($dir)) {
             $body = file_get_contents($dir);
-            $size = filesize($dir);
-            $this->cache[$dir] = $body;
+            $size = strlen($body);
+            //$this->cache[$dir] = $body;
         // can't load file return false
         } else {
             return false;
@@ -174,8 +175,14 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return;
     }
 
+    public function onConnectFailed(\obray\interfaces\SocketConnectionInterface $connection): void
+    {
+        print_r("failed!\n");
+    }
+
     public function onWriteFailed($data, \obray\interfaces\SocketConnectionInterface $connection): void
     {
+        print_r("Write Failed\n");
         return;
     }
 
@@ -187,6 +194,16 @@ class Handler extends \obray\base\SocketServerBaseHandler
     public function onDisconnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
+    }
+
+    private function processMeaningfulHeaders(\obray\http\Headers $headers, \obray\interfaces\SocketConnectionInterface $connection)
+    {
+        forEach($headers as $index => $header){
+            $className = '\obray\httpWebSocketServer\HeaderHandlers\\'.$header->getClassName();
+            if(class_exists($className)){
+                $className::handle($header, $connection);
+            }
+        }
     }
 
 }
