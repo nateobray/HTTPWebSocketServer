@@ -44,6 +44,11 @@ class Handler extends \obray\base\SocketServerBaseHandler
         $uri = $request->getURI();
         if(empty($uri)) $uri = "/"; // normalize URI
 
+        // check cache for content
+        if(!empty($this->cache[$uri]) && $response = $this->getCached($uri)){
+            return $response;
+        }
+
         // check for static content
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
             return $response;
@@ -65,6 +70,24 @@ class Handler extends \obray\base\SocketServerBaseHandler
     }
 
     /**
+     * Get Cached
+     *
+     * Attempt to find the content for the URI in an in memory array of content
+     */
+
+    private function getCached(string $uri)
+    {
+        $body = $this->cache[$uri];
+        $size = strlen($body);
+
+        return \obray\http\Response::respond(
+            \obray\http\types\Status::OK,
+            \obray\http\types\MIME::getSetMimeFromExtension($uri),
+            $body
+        );
+    }
+
+    /**
      * Get Static
      *
      * Attempt to find a static file corresponding to the supplied URI and the
@@ -75,32 +98,26 @@ class Handler extends \obray\base\SocketServerBaseHandler
     {
 	    $file = str_replace('//','/',$this->root."/static" . $uri);
         $dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+        // load static file with URI
         if(file_exists($file) && !is_dir($file)) {
             $body = file_get_contents($file);
             $size = strlen($body);
-            //$this->cache[$file] = $body;
+            $this->cache[$uri] = $body;
         // load static file with URI plus specified index file
         } else if (file_exists($dir)) {
             $body = file_get_contents($dir);
             $size = strlen($body);
-            //$this->cache[$dir] = $body;
+            $this->cache[$uri] = $body;
         // can't load file return false
         } else {
             return false;
         }
 
-        // build & return response
-        $response = new \obray\http\Transport();
-        $mime = (new \obray\http\types\MIME())->getSetMimeFromExtension($uri);
-        $status = new \obray\http\types\Status(\obray\http\types\Status::OK);
-        $response->setStatus($status);
-        $response->setHeaders(new \obray\http\Headers([
-            "Content-Length" => $size,
-            "Content-Type" => $mime,
-            "Connection" => "Keep-Alive"
-        ]));
-        $response->setBody(\obray\http\Body::decode($body));
-        return $response;
+        return \obray\http\Response::respond(
+            \obray\http\types\Status::OK,
+            \obray\http\types\MIME::getSetMimeFromExtension($uri),
+            $body
+        );
     }
 
     /**
@@ -152,17 +169,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     public static function response(string $responseData, int $status=\obray\http\types\Status::OK, string $contentType=\obray\http\types\MIME::TEXT): \obray\http\Transport
     {
-        print_r($responseData);
-        $response = new \obray\http\Transport();
-        $status = new \obray\http\types\Status($status);
-        $response->setStatus($status);
-        $response->setHeaders(new \obray\http\Headers([
-            "Content-Length" => strlen($responseData),
-            "Content-Type" => $contentType,
-            "Connection" => "Keep-Alive"
-        ]));
-        $response->setBody(\obray\http\Body::decode($responseData));
-        return $response;
+        return \obray\http\Response::respond($status, $contentType, $body);
     }
 
     public function onConnect(\obray\interfaces\SocketConnectionInterface $connection): void
@@ -199,6 +206,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private function processMeaningfulHeaders(\obray\http\Headers $headers, \obray\interfaces\SocketConnectionInterface $connection)
     {
         forEach($headers as $index => $header){
+            //print_r($header);
             $className = '\obray\httpWebSocketServer\HeaderHandlers\\'.$header->getClassName();
             if(class_exists($className)){
                 $className::handle($header, $connection);
