@@ -23,9 +23,9 @@ class Handler extends \obray\base\SocketServerBaseHandler
             print_r($e->getMessage()."\n");
             return;
         }
-
+        
         $this->processMeaningfulHeaders($request->getHeaders(), $connection);
-
+        
         $response = $this->getResponse($request);
         $connection->qWrite($response->encode());
         $endTime = microtime(true) - $time;
@@ -43,17 +43,17 @@ class Handler extends \obray\base\SocketServerBaseHandler
         // get the request URI
         $uri = $request->getURI();
         if(empty($uri)) $uri = "/"; // normalize URI
-
+        
         // check cache for content
         if(!empty($this->cache[$uri]) && $response = $this->getCached($uri)){
             return $response;
         }
-
+        
         // check for static content
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
             return $response;
         }
-        
+
         // check for root route
         if($response = $this->getRoot($uri, $request)){
             return $response;
@@ -61,10 +61,8 @@ class Handler extends \obray\base\SocketServerBaseHandler
         
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
-            print_r("get defined\n");
             return $response;
         }
-
         // all else fails return not found response
         return \obray\HttpWebSocketServer\Handler::response("Not Found", \obray\http\types\Status::NOT_FOUND);
     }
@@ -98,6 +96,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
     {
 	    $file = str_replace('//','/',$this->root."/static" . $uri);
         $dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+        
         // load static file with URI
         if(file_exists($file) && !is_dir($file)) {
             $body = file_get_contents($file);
@@ -112,7 +111,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
         } else {
             return false;
         }
-
+        
         return \obray\http\Response::respond(
             \obray\http\types\Status::OK,
             \obray\http\types\MIME::getSetMimeFromExtension($uri),
@@ -167,10 +166,10 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return false;
     }
 
-    public static function response(string $responseData, int $status=\obray\http\types\Status::OK, string $contentType=\obray\http\types\MIME::TEXT): \obray\http\Transport
-    {
-        return \obray\http\Response::respond($status, $contentType, $body);
-    }
+    //public static function response(string $responseData, int $status=\obray\http\types\Status::OK, string $contentType=\obray\http\types\MIME::TEXT): \obray\http\Transport
+    //{
+    //    return \obray\http\Response::respond($status, $contentType, $body);
+    //}
 
     public function onConnect(\obray\interfaces\SocketConnectionInterface $connection): void
     {
@@ -206,7 +205,6 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private function processMeaningfulHeaders(\obray\http\Headers $headers, \obray\interfaces\SocketConnectionInterface $connection)
     {
         forEach($headers as $index => $header){
-            //print_r($header);
             $className = '\obray\httpWebSocketServer\HeaderHandlers\\'.$header->getClassName();
             if(class_exists($className)){
                 $className::handle($header, $connection);
