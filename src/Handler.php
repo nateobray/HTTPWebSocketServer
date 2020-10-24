@@ -6,11 +6,13 @@ class Handler extends \obray\base\SocketServerBaseHandler
 {
     private $cache = [];
     private $activeSockets = [];
+    private $shouldCache = false;
 
-    public function __construct($root, $index)
+    public function __construct($root, $index, $shouldCache=false)
     {
         $this->root = $root;
-	$this->index = $index;
+        $this->index = $index;
+        $this->shouldCache = $shouldCache;
     }
 
     public function onData(string $data, \obray\interfaces\SocketConnectionInterface $connection): void
@@ -45,7 +47,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
         if(empty($uri)) $uri = "/"; // normalize URI
         
         // check cache for content
-        if(!empty($this->cache[$uri]) && $response = $this->getCached($uri)){
+        if($this->shouldCache && !empty($this->cache[$uri]) && $response = $this->getCached($uri)){
             return $response;
         }
         
@@ -53,7 +55,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
             return $response;
         }
-
+        
         // check for root route
         if($response = $this->getRoot($uri, $request)){
             return $response;
@@ -63,8 +65,12 @@ class Handler extends \obray\base\SocketServerBaseHandler
         if($response = $this->getDefinedRoute($request, $uri)){
             return $response;
         }
+        print_r("socket\n");
         // all else fails return not found response
-        return \obray\HttpWebSocketServer\Handler::response("Not Found", \obray\http\types\Status::NOT_FOUND);
+        return \obray\http\Response::respond(
+            \obray\http\types\Status::NOT_FOUND,
+            \obray\http\types\MIME::TEXT
+        );
     }
 
     /**
@@ -151,8 +157,10 @@ class Handler extends \obray\base\SocketServerBaseHandler
         $path = array_filter($path);
         while(count($path)>0){
             ++$length;
+            print_r('\\routes\\' . implode('\\', $path) . "\n");
             if(class_exists('\\routes\\' . implode('\\', $path))){
                 $class = '\\routes\\' . implode('\\', $path);
+                
                 $definedRoute = new $class($remaining, $this);
                 $function = strtolower($request->getMethod());
                 if(method_exists($definedRoute, $function)){
