@@ -164,7 +164,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
                 $definedRoute = new $class($remaining, $this);
                 $function = strtolower($request->getMethod());
                 if(method_exists($definedRoute, $function)){
-                    return $definedRoute->$function();
+                    return $definedRoute->$function($request);
                 }
             } else {
                 $remaining[] = array_pop($path);
