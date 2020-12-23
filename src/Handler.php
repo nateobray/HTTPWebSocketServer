@@ -8,6 +8,8 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private $activeSockets = [];
     private $shouldCache = false;
 
+    public $sessions;
+
     public function __construct($root, $index, $shouldCache=false)
     {
         $this->root = $root;
@@ -26,7 +28,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
             return;
         }
         
-        $this->processMeaningfulHeaders($request->getHeaders(), $connection);
+        $this->getSessions($request);
         
         $response = $this->getResponse($request);
         $connection->qWrite($response->encode());
@@ -45,31 +47,35 @@ class Handler extends \obray\base\SocketServerBaseHandler
         // get the request URI
         $uri = $request->getURI();
         if(empty($uri)) $uri = "/"; // normalize URI
-        
+
         // check cache for content
         if($this->shouldCache && !empty($this->cache[$uri]) && $response = $this->getCached($uri)){
+            $response->addSessionCookies($this->getSessionCookies());
             return $response;
         }
         
         // check for static content
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
+            $response->addSessionCookies($this->getSessionCookies());
             return $response;
         }
         
         // check for root route
         if($response = $this->getRoot($uri, $request)){
+            $response->addSessionCookies($this->getSessionCookies());
             return $response;
         }
         
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
+            $response->addSessionCookies($this->getSessionCookies());
             return $response;
         }
-        print_r("socket\n");
+
         // all else fails return not found response
         return \obray\http\Response::respond(
             \obray\http\types\Status::NOT_FOUND,
-            \obray\http\types\MIME::TEXT
+            ['Content-Type' => \obray\http\types\MIME::TEXT]
         );
     }
 
@@ -86,7 +92,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
         return \obray\http\Response::respond(
             \obray\http\types\Status::OK,
-            \obray\http\types\MIME::getSetMimeFromExtension($uri),
+            ['Content-Type' => \obray\http\types\MIME::getSetMimeFromExtension($uri)],
             $body
         );
     }
@@ -120,7 +126,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
         
         return \obray\http\Response::respond(
             \obray\http\types\Status::OK,
-            \obray\http\types\MIME::getSetMimeFromExtension($uri),
+            ['Content-Type' => \obray\http\types\MIME::getSetMimeFromExtension($uri)],
             $body
         );
     }
@@ -160,11 +166,10 @@ class Handler extends \obray\base\SocketServerBaseHandler
             print_r('\\routes\\' . implode('\\', $path) . "\n");
             if(class_exists('\\routes\\' . implode('\\', $path))){
                 $class = '\\routes\\' . implode('\\', $path);
-                
                 $definedRoute = new $class($remaining, $this);
                 $function = strtolower($request->getMethod());
                 if(method_exists($definedRoute, $function)){
-                    return $definedRoute->$function($request);
+                    return $definedRoute->$function($request, $this);
                 }
             } else {
                 $remaining[] = array_pop($path);
@@ -174,10 +179,53 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return false;
     }
 
-    //public static function response(string $responseData, int $status=\obray\http\types\Status::OK, string $contentType=\obray\http\types\MIME::TEXT): \obray\http\Transport
-    //{
-    //    return \obray\http\Response::respond($status, $contentType, $body);
-    //}
+    public function setSessions(array $sessions)
+    {
+        $this->sessions = $sessions;
+    }
+
+    public function refreshSession($key)
+    {
+        $session = $this->sessions[$key];
+        $s = new $session();
+        $this->newSessions[$key] = $s;
+    }
+
+    public function getSessions(\obray\http\Transport $request)
+    {
+        if(empty($this->sessions)) return;
+        forEach($this->sessions as $key => $session){
+            $cookie = $request->getCookie($key);
+            if($cookie && $sessionId = $cookie->getValue()){
+                $request->setSession($key, new $session($sessionId));
+                continue;
+            }
+            print_r("Creating new session ID\n");
+            $s = new $session();
+            $this->newSessions[$key] = $s;
+            $request->setSession($key, $s);
+        }
+    }
+
+    public function getSessionCookies()
+    {
+        if(empty($this->newSessions)) return [];
+        $requestCookies = [];
+        forEach($this->newSessions as $key => $session){
+            if(!$session->isOnClient()) {
+                $requestCookies[] = new \obray\http\Cookie($key, $session->getSessionId(), [
+                    'expires' => $session->getExpires(),
+                    'secure' => $session->getSecure(),
+                    'httpOnly' => $session->getHttpOnly(),
+                    'sameSite' => $session->getSameSite(),
+                    'path' => $session->getPath()
+                ]);
+            }
+        }
+        
+        unset($this->newSessions);
+        return $requestCookies;
+    }
 
     public function onConnect(\obray\interfaces\SocketConnectionInterface $connection): void
     {
@@ -208,16 +256,6 @@ class Handler extends \obray\base\SocketServerBaseHandler
     public function onDisconnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
-    }
-
-    private function processMeaningfulHeaders(\obray\http\Headers $headers, \obray\interfaces\SocketConnectionInterface $connection)
-    {
-        forEach($headers as $index => $header){
-            $className = '\obray\httpWebSocketServer\HeaderHandlers\\'.$header->getClassName();
-            if(class_exists($className)){
-                $className::handle($header, $connection);
-            }
-        }
     }
 
 }
