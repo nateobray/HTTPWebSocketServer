@@ -4,18 +4,27 @@ namespace obray\httpWebSocketServer;
 
 class Session implements \obray\httpWebSocketServer\interfaces\SessionInterface
 {
+    public $key;
     public $sessionId;
     public $isOnClient = false;
 
-    public function __construct(string $sessionId=null, bool $isOnClient=true)
+    private $lastAccess;
+
+    public function __construct(string $key, string $sessionId=null, bool $isOnClient=true)
     {
-        print_r("Session ID: " . $sessionId . "\n");
+        $this->lastAccess = time();
+        $this->key = $key;
         if($sessionId===null){
             $this->generateSessionId();
             return;
         }
         $this->isOnClient = $isOnClient;
         $this->sessionId = $sessionId;
+    }
+
+    public function getAge(): int
+    {
+        return time() - $this->lastAccess;
     }
 
     private function generateSessionId()
@@ -27,6 +36,7 @@ class Session implements \obray\httpWebSocketServer\interfaces\SessionInterface
 
     public function reset()
     {
+        $this->lastAccess = time();
         $this->generateSessionId();
         $this->isOnClient = false;
     }
@@ -61,13 +71,20 @@ class Session implements \obray\httpWebSocketServer\interfaces\SessionInterface
         return '/';
     }
 
+    public function getKey(): string
+    {
+        return $this->key;
+    }
+
     public function getSessionId(): string
     {
+        $this->lastAccess = time();
         return $this->sessionId;
     }
 
     public function isOnClient(): bool
     {
+        $this->lastAccess = time();
         return $this->isOnClient;
     }
 }

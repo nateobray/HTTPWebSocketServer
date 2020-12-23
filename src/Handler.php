@@ -8,7 +8,8 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private $activeSockets = [];
     private $shouldCache = false;
 
-    public $sessions;
+    private $sessionTypes;
+    private $sessions = [];
 
     public function __construct($root, $index, $shouldCache=false)
     {
@@ -17,22 +18,42 @@ class Handler extends \obray\base\SocketServerBaseHandler
         $this->shouldCache = $shouldCache;
     }
 
+    public function onStart(\obray\SocketServer $server): void
+    {
+        $this->sessionWatcher = $server->eventLoop->watchTimer(0, 15, function($watcher){
+            print_r("Attempting to cleanup sessions.\n");
+            $sessionsCleaned = 0;
+            forEach($this->sessions as $key => $session){
+                if($session->getAge() > (5 * 60)){ 
+                    print_r("unsetting session\n");
+                    unset($this->sessions[$key]);
+                    ++$sessionsCleaned;
+                }
+            }
+            print_r("Sessions cleaned: " . $sessionsCleaned . "\n");
+        });
+    }
+
     public function onData(string $data, \obray\interfaces\SocketConnectionInterface $connection): void
     {
         $time = microtime(true);
         if(empty($data)) return;
+        // attempt to decode our data into a HTTP transport
         try {
             $request = \obray\http\Transport::decode($data);
         } catch (\Exception $e) {
             print_r($e->getMessage()."\n");
             return;
         }
-        
+        // retreive sessions defined in our request        
         $this->getSessions($request);
-        
+        // get the request response
         $response = $this->getResponse($request);
+        // write response to network
         $connection->qWrite($response->encode());
-        $endTime = microtime(true) - $time;
+        // show request duration
+        $duration = microtime(true) - $time;
+        print_r("Run time: " . number_format($duration*1000, 3, '.', ',') . "ms " . $request->getURI() . "\n");
     }
 
     /**
@@ -50,25 +71,26 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
         // check cache for content
         if($this->shouldCache && !empty($this->cache[$uri]) && $response = $this->getCached($uri)){
-            $response->addSessionCookies($this->getSessionCookies());
+            $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
         
         // check for static content
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
-            $response->addSessionCookies($this->getSessionCookies());
+            $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
         
         // check for root route
         if($response = $this->getRoot($uri, $request)){
-            $response->addSessionCookies($this->getSessionCookies());
+            $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
         
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
-            $response->addSessionCookies($this->getSessionCookies());
+
+            $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
 
@@ -179,51 +201,65 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return false;
     }
 
-    public function setSessions(array $sessions)
+    public function setSessionsTypes(array $sessionType)
     {
-        $this->sessions = $sessions;
+        $this->sessionTypes = $sessionType;
     }
 
-    public function refreshSession($key)
+    public function refreshSession($key, &$request)
     {
-        $session = $this->sessions[$key];
-        $s = new $session();
-        $this->newSessions[$key] = $s;
+        $sessionType = $this->sessionTypes[$key];
+        print_r($sessionType . "\n");
+        print_r("blah\n");
+        $s = new $sessionType($key);
+        
+        $this->sessions[$s->getSessionId()] = $s;
+        
+        $request->setSessionId($key, $s->getSessionId());
     }
 
-    public function getSessions(\obray\http\Transport $request)
+    public function getSession(string $key, \obray\http\Transport $request)
     {
-        if(empty($this->sessions)) return;
-        forEach($this->sessions as $key => $session){
+        $sessionIds = $request->getSessions();
+        return $this->sessions[$sessionIds[$key]];
+    }
+
+    public function getSessions(\obray\http\Transport &$request)
+    {
+        if(empty($this->sessionTypes)) return;
+        forEach($this->sessionTypes as $key => $sessionType){
             $cookie = $request->getCookie($key);
             if($cookie && $sessionId = $cookie->getValue()){
-                $request->setSession($key, new $session($sessionId));
+                if(empty($this->sessions[$sessionId])){
+                    $this->sessions[$sessionId] = new $sessionType($key, $sessionId);
+                }
+                $sessionIds[$key] = $sessionId;
                 continue;
             }
-            print_r("Creating new session ID\n");
-            $s = new $session();
-            $this->newSessions[$key] = $s;
-            $request->setSession($key, $s);
+            $s = new $sessionType($key);
+            $this->sessions[$s->getSessionId()] = $s;
+            $sessionIds[$key] = $s->getSessionId();
         }
+        $request->setSessions($sessionIds);
     }
 
-    public function getSessionCookies()
+    public function getSessionCookies(\obray\http\Transport $request)
     {
-        if(empty($this->newSessions)) return [];
+        
+        $sessionIds = $request->getSessions();   
+        if(empty($sessionIds)) return [];
         $requestCookies = [];
-        forEach($this->newSessions as $key => $session){
-            if(!$session->isOnClient()) {
-                $requestCookies[] = new \obray\http\Cookie($key, $session->getSessionId(), [
-                    'expires' => $session->getExpires(),
-                    'secure' => $session->getSecure(),
-                    'httpOnly' => $session->getHttpOnly(),
-                    'sameSite' => $session->getSameSite(),
-                    'path' => $session->getPath()
+        forEach($sessionIds as $id){
+            if(!$this->sessions[$id]->isOnClient()) {
+                $requestCookies[] = new \obray\http\Cookie($this->sessions[$id]->getKey(), $this->sessions[$id]->getSessionId(), [
+                    'expires' => $this->sessions[$id]->getExpires(),
+                    'secure' => $this->sessions[$id]->getSecure(),
+                    'httpOnly' => $this->sessions[$id]->getHttpOnly(),
+                    'sameSite' => $this->sessions[$id]->getSameSite(),
+                    'path' => $this->sessions[$id]->getPath()
                 ]);
             }
         }
-        
-        unset($this->newSessions);
         return $requestCookies;
     }
 
