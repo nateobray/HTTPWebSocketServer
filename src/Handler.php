@@ -89,7 +89,6 @@ class Handler extends \obray\base\SocketServerBaseHandler
         
         // check for defined routes
         if($response = $this->getDefinedRoute($request, $uri)){
-
             $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
@@ -129,7 +128,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private function getStatic(string $uri)
     {
 	    $file = str_replace('//','/',$this->root."/static" . $uri);
-        $dir = str_replace('//','/',$this->root."static" . $uri . $this->index);
+        $dir = str_replace('//','/',$this->root."static" . '/' . trim($uri, '/') . '/' . $this->index);
         
         // load static file with URI
         if(file_exists($file) && !is_dir($file)) {
@@ -145,7 +144,6 @@ class Handler extends \obray\base\SocketServerBaseHandler
         } else {
             return false;
         }
-        
         return \obray\http\Response::respond(
             \obray\http\types\Status::OK,
             ['Content-Type' => \obray\http\types\MIME::getSetMimeFromExtension($uri)],
@@ -212,7 +210,6 @@ class Handler extends \obray\base\SocketServerBaseHandler
         print_r($sessionType . "\n");
         print_r("blah\n");
         $s = new $sessionType($key);
-        
         $this->sessions[$s->getSessionId()] = $s;
         
         $request->setSessionId($key, $s->getSessionId());
