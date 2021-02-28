@@ -48,7 +48,9 @@ class Handler extends \obray\base\SocketServerBaseHandler
         // retreive sessions defined in our request        
         $this->getSessions($request);
         // get the request response
-        $response = $this->getResponse($request);
+        $dbh = $this->pool->dbh;
+        $response = $this->getResponse($request, $dbh);
+        $this->pool->release($dbh);
         // write response to network
         $connection->qWrite($response->encode());
         // show request duration
@@ -63,33 +65,39 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * transport object as a response.
      */
 
-    private function getResponse(\obray\http\Transport $request): \obray\http\Transport
+    private function getResponse(\obray\http\Transport $request, \obray\ConnectionManager\Connection $conn): \obray\http\Transport
     {
         // get the request URI
         $uri = $request->getURI();
         if(empty($uri)) $uri = "/"; // normalize URI
 
         // check cache for content
+        print_r("getting cached response\n");
         if($this->shouldCache && !empty($this->cache[$uri]) && $response = $this->getCached($uri)){
             $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
         
         // check for static content
+        print_r("getting static response\n");
         if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
             $response->addSessionCookies($this->getSessionCookies($request));
             return $response;
         }
         
         // check for root route
-        if($response = $this->getRoot($uri, $request)){
+        print_r("getting root response\n");
+        if($response = $this->getRoot($uri, $request, $conn)){
             $response->addSessionCookies($this->getSessionCookies($request));
+            $this->pool->release($conn);
             return $response;
         }
         
         // check for defined routes
-        if($response = $this->getDefinedRoute($request, $uri)){
+        print_r("getting defined response\n");
+        if($response = $this->getDefinedRoute($request, $uri, $conn)){
             $response->addSessionCookies($this->getSessionCookies($request));
+            $this->pool->release($conn);
             return $response;
         }
 
@@ -146,7 +154,10 @@ class Handler extends \obray\base\SocketServerBaseHandler
         }
         return \obray\http\Response::respond(
             \obray\http\types\Status::OK,
-            ['Content-Type' => \obray\http\types\MIME::getSetMimeFromExtension($uri)],
+            [
+                'Content-Type' => \obray\http\types\MIME::getSetMimeFromExtension($uri),
+                'Cache-Control' => 'Cache-Control: public, max-age=604800, immutable'
+            ],
             $body
         );
     }
@@ -157,13 +168,13 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * Retrieves the root route
      */
 
-    private function getRoot(string $uri, \obray\http\Transport $request)
+    private function getRoot(string $uri, \obray\http\Transport $request, \obray\ConnectionManager\Connection $conn)
     {
         if ($uri == "/" && class_exists("\\routes\\Root")){
             $root = new \routes\Root();
             $function = strtolower($request->getMethod());
             if(method_exists($root, $function)){
-                return $root->$function();
+                return $root->$function($request, $this, $conn);
             }
         }
         return false;
@@ -177,7 +188,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * and passing the remaining path into the constructor
      */
 
-    private function getDefinedRoute(\obray\http\Transport $request, string $uri)
+    private function getDefinedRoute(\obray\http\Transport $request, string $uri, \obray\ConnectionManager\Connection $conn)
     {
         $path = explode('/', $uri); $remaining = []; $max = 10; $length = 0;
         $path = array_filter($path);
@@ -189,7 +200,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
                 $definedRoute = new $class($remaining, $this);
                 $function = strtolower($request->getMethod());
                 if(method_exists($definedRoute, $function)){
-                    return $definedRoute->$function($request, $this);
+                    return $definedRoute->$function($request, $this, $conn);
                 }
             } else {
                 $remaining[] = array_pop($path);
@@ -207,11 +218,8 @@ class Handler extends \obray\base\SocketServerBaseHandler
     public function refreshSession($key, &$request)
     {
         $sessionType = $this->sessionTypes[$key];
-        print_r($sessionType . "\n");
-        print_r("blah\n");
         $s = new $sessionType($key);
         $this->sessions[$s->getSessionId()] = $s;
-        
         $request->setSessionId($key, $s->getSessionId());
     }
 
@@ -289,6 +297,11 @@ class Handler extends \obray\base\SocketServerBaseHandler
     public function onDisconnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
         return;
+    }
+
+    public function setConnectionPool(\obray\ConnectionManager\Pool $pool)
+    {
+        $this->pool = $pool;
     }
 
 }
