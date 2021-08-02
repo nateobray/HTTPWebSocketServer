@@ -11,9 +11,21 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private $shouldCache = false;
     private $continuations = [];
     private $continuationRequests = [];
+    private $requests = [];
 
-    private $sessionTypes;
+    private $sessionHandler;
+    private $sessionKey;
     private $sessions = [];
+
+    private $middleware = [];
+
+    public function registerMiddleware(string $path=null, array $middlewares)
+    {
+        forEach($middlewares as $middleware){
+            if(!class_exists($middleware)) throw new \Exception("Registered Middleware (" . $middleware . ") does not exist");
+        }
+        $this->middleware[$path] = $middlewares;
+    }
 
     public function __construct($root, $index, $shouldCache=false)
     {
@@ -46,60 +58,96 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * completed, the read data is passed here with the connection
      */
 
-    public function onData(string $data, \obray\interfaces\SocketConnectionInterface $connection): void
+    public function onData(string $data, int $readLength, \obray\interfaces\SocketConnectionInterface $connection)
     {
-        // if no data received simply return
-        if(empty($data)) return;
-        // begin timing
-        $time = microtime(true);
-        // check if we're expecting a continuation on this connection
-        $index = array_search($connection, $this->continuations);
-        if($index !== false){
-            print_r("Process continuation\n");
-            $request = $this->continuationRequests[$index];
-            $request->setBody(\obray\http\Body::decode($data));
-            unset($this->continuations[$index]);
-            unset($this->continuationRequests[$index]);
-        }
-        // check if this is one of our websocket connections
-        $index = array_search($connection, $this->webSocketConns);
-        if($index !== false){
-            print_r("\n\nWebsocket connection incoming\n");
-            $this->webSockets[$index]->decode($data, $connection, [$this, 'onMessage']);
-            $duration = microtime(true) - $time;
-            print_r("Run time: " . number_format($duration*1000, 3, '.', ',') . "ms websocket request\n");
-            return;
+
+        // handle body content
+        if(!empty($this->requests[(int)$connection->getSocket()]) && $this->requests[(int)$connection->getSocket()]->isComplete()){
+
+            try {
+                $contentEncoding = $this->requests[(int)$connection->getSocket()]->getHeaders("Content-Encoding");
+                $body = \obray\http\Body::decode($data, $contentEncoding);
+            } catch(\Exception $e) {
+                $body = \obray\http\Body::decode($data);
+            }
+
+            $contentType = $this->requests[(int)$connection->getSocket()]->getHeaders("Content-Type");
+            $body->parseFormat($contentType);
+            $this->requests[(int)$connection->getSocket()]->setBody($body);
+
+            // no content length found, check for chunked encoding next
+            $this->requests[(int)$connection->getSocket()]->complete();
+
+            $dbh = $this->pool->dbh??null;
+            $response = $this->getResponse($this->requests[(int)$connection->getSocket()], $dbh, $connection);
+            if(!empty($this->pool)) $this->pool->release($dbh);
+
+            // write response to network
+            $connection->qWrite($response->encode());
+
+            // show request duration
+            print_r("Run time: " . number_format($this->requests[(int)$connection->getSocket()]->getDuration(), 3, '.', ',') . "ms " . $this->requests[(int)$connection->getSocket()]->getURI() . "\n");
+            
+            // destroy request
+            unset($this->requests[(int)$connection->getSocket()]);
+            
+            return 0;
+
         }
 
-        // attempt to decode our data into a HTTP transport
-        if(empty($request)){
+        // handle end of headers section
+        if(!empty($this->requests[(int)$connection->getSocket()]) && empty($data)){   
+
             try {
-                $request = \obray\http\Transport::decode($data);
-                if((string)$request->getHeaders('Expect') === '100-continue'){
-                    $this->continuations[] = $connection;
-                    $this->continuationRequests[] = $request;
-                    $response = \obray\http\Response::respond(\obray\http\types\Status::CONTINUE);
-                    $connection->qWrite($response->encode());
-                    return;
+
+                // get content length & determine if body exists
+                $contentLength = $this->requests[(int)$connection->getSocket()]->getHeaders("Content-Length");
+                $contentLength = intVal($contentLength->getValue()->encode());
+                if($contentLength === 0){
+                    throw new \Exception('no body found.');
                 }
-            } catch (\Exception $e) {
-                print_r($e->getMessage()."\n");
-                return;
+                // if body found complete the request so we know to process the body
+                $this->requests[(int)$connection->getSocket()]->complete();
+                // read the rest of the request specified by Content-Length header
+                $connection->setReadMethod(\obray\SocketConnection::READ_UNTIL_LENGTH);
+                // return content length so we know the length to read
+                return $contentLength;
+
+            } catch(\Exception $e){
+                
+                // no content length found, check for chunked encodeing next
+                $this->requests[(int)$connection->getSocket()]->complete();
+
+                $dbh = $this->pool->dbh??null;
+                $response = $this->getResponse($this->requests[(int)$connection->getSocket()], $dbh, $connection);
+                if(!empty($this->pool)) $this->pool->release($dbh);
+                
+                // write response to network
+                $connection->qWrite($response->encode());
+
+                // show request duration
+                print_r("Run time: " . number_format($this->requests[(int)$connection->getSocket()]->getDuration(), 3, '.', ',') . "ms " . $this->requests[(int)$connection->getSocket()]->getURI() . "\n");
+
+                // destroy request
+                unset($this->requests[(int)$connection->getSocket()]);
+                
+                return false;
             }
         }
-        // retreive sessions defined in our request        
-        $this->getSessions($request);
-        // get the request response
-        
-        $dbh = $this->pool->dbh??null;
-        $response = $this->getResponse($request, $dbh, $connection);
-        if(!empty($this->pool)) $this->pool->release($dbh);
 
-        // write response to network
-        $connection->qWrite($response->encode());
-        // show request duration
-        $duration = microtime(true) - $time;
-        print_r("Run time: " . number_format($duration*1000, 3, '.', ',') . "ms " . $request->getURI() . "\n");
+        // parse header
+        if(!empty($this->requests[(int)$connection->getSocket()])){
+            $header = \obray\http\Header::decode($data);
+            $this->requests[(int)$connection->getSocket()]->addHeader($header);
+        }
+
+        // decode Protocol
+        if(empty($this->requests[(int)$connection->getSocket()])){
+            $time = microtime(true);
+            if(empty($data)) return; // if nothing to parse, don't bother
+            $this->requests[(int)$connection->getSocket()] = \obray\http\Transport::decodeProtocolRequest($data);
+        }
+
     }
 
     /**
@@ -141,41 +189,64 @@ class Handler extends \obray\base\SocketServerBaseHandler
         // get the request URI
         $uri = $request->getURI();
         if(empty($uri)) $uri = "/"; // normalize URI
+        
+        // retreive session data
+        $session = $this->findSession($request);
+
+        // invoke any middleware
+        forEach($this->middleware as $path => $arrayM){
+            forEach($arrayM as $m){
+                $middle = new $m($uri, $request, $conn, $session);
+                $middlewareResponse = $middle->handle();
+                print_r("Middleware Response\n");
+                print_r($middlewareResponse);
+                $path = rtrim($path, '/*');
+                $testUri = rtrim($uri, '/');
+                if(is_object($middlewareResponse) && get_class($middlewareResponse) === "obray\http\Transport" && (strpos($testUri, $path) === 0 || $testUri === $path)) {
+                    $response = $middlewareResponse;
+                }
+            }
+        }
 
         // check cache for content
         print_r("getting cached response\n");
-        if($this->shouldCache && !empty($this->cache[$uri]) && $response = $this->getCached($uri)){
-            $response->addSessionCookies($this->getSessionCookies($request));
-            return $response;
+        if(empty($response) && $this->shouldCache && !empty($this->cache[$uri])){
+            $response = $this->getCached($uri);
         }
 
         // check if this is a websocket connection
         print_r("Getting WebSocket connection\n");
-        if($response = $this->getWebSocket($request, $uri, $connection)){
+        if(empty($response)){
+            $response = $this->getWebSocket($request, $uri, $connection);
             if(!empty($this->pool)) $this->pool->release($conn);
-            return $response;
         }
         
         // check for static content
         print_r("getting static response\n");
-        if($request->getMethod() == 'GET' && $response = $this->getStatic($uri)){
-            $response->addSessionCookies($this->getSessionCookies($request));
-            return $response;
+        if(empty($response) && $request->getMethod() == 'GET'){
+            $response = $this->getStatic($uri);
         }
         
         // check for root route
         print_r("getting root response\n");
-        if($response = $this->getRoot($uri, $request, $conn)){
-            $response->addSessionCookies($this->getSessionCookies($request));
+        if(empty($response)){
+            $response = $this->getRoot($uri, $request, $conn, $session);
             if(!empty($this->pool)) $this->pool->release($conn);
-            return $response;
         }
         
         // check for defined routes
         print_r("getting defined response\n");
-        if($response = $this->getDefinedRoute($request, $uri, $conn)){
-            $response->addSessionCookies($this->getSessionCookies($request));
+        if(empty($response)){
+            $response = $this->getDefinedRoute($request, $uri, $conn, $session);
             if(!empty($this->pool)) $this->pool->release($conn);
+        }
+
+        print_r("Setting Session Cookie if needed\n");
+        if(!empty($response)) {
+            if(!$session->isOnClient()) {
+                $response->addHeader(new \obray\http\Header('Set-Cookie', (string)$session));
+                $session->isOnClient = true;
+            }
             return $response;
         }
 
@@ -194,9 +265,14 @@ class Handler extends \obray\base\SocketServerBaseHandler
     private function getWebSocket(\obray\http\Transport $request, string $uri, \obray\interfaces\SocketConnectionInterface $connection)
     {
         // validate this is websocket initiation by the headers
-        $connectionHeader = $request->getHeaders('Connection');
-        $upgradeHeader = $request->getHeaders('Upgrade');
-        if(empty($connectionHeader) || strtolower($connectionHeader) != 'upgrade' || empty($upgradeHeader) || strtolower($upgradeHeader) != 'websocket') return false;
+        try{
+            $connectionHeader = $request->getHeaders('Connection');
+            $upgradeHeader = $request->getHeaders('Upgrade');
+        } catch (\Exception $e) {
+            print_r($e->getMessage()."\n");
+            return false;
+        }
+        //if(empty($connectionHeader) || strtolower($connectionHeader) != 'upgrade' || empty($upgradeHeader) || strtolower($upgradeHeader) != 'websocket') return false;
         print_r("Checking WebSocket Headers\n");
         // validate WebSocket headers
         $secWebSocketKey = $request->getHeaders('Sec-WebSocket-Key');
@@ -281,13 +357,13 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * Retrieves the root route
      */
 
-    private function getRoot(string $uri, \obray\http\Transport $request, \obray\ConnectionManager\Connection $conn=null)
+    private function getRoot(string $uri, \obray\http\Transport $request, \obray\ConnectionManager\Connection $conn=null, \obray\httpWebSocketServer\interfaces\SessionInterface $session)
     {
         if ($uri == "/" && class_exists("\\routes\\Root")){
             $root = new \routes\Root();
             $function = strtolower($request->getMethod());
             if(method_exists($root, $function)){
-                return $root->$function($request, $this, $conn);
+                return $root->$function($request, $this, $conn, $session);
             }
         }
         return false;
@@ -301,7 +377,7 @@ class Handler extends \obray\base\SocketServerBaseHandler
      * and passing the remaining path into the constructor
      */
 
-    private function getDefinedRoute(\obray\http\Transport $request, string $uri, \obray\ConnectionManager\Connection $conn=null)
+    private function getDefinedRoute(\obray\http\Transport $request, string $uri, \obray\ConnectionManager\Connection $conn=null, \obray\httpWebSocketServer\interfaces\SessionInterface $session)
     {
         $path = explode('/', $uri); $remaining = []; $max = 10; $length = 0;
         $path = array_filter($path);
@@ -311,9 +387,12 @@ class Handler extends \obray\base\SocketServerBaseHandler
             if(class_exists('\\routes\\' . implode('\\', $path))){
                 $class = '\\routes\\' . implode('\\', $path);
                 $definedRoute = new $class($remaining, $this);
+                
                 $function = strtolower($request->getMethod());
+                
                 if(method_exists($definedRoute, $function)){
-                    return $definedRoute->$function($request, $this, $conn);
+                    
+                    return $definedRoute->$function($request, $this, $conn, $session);
                 }
             } else {
                 $remaining[] = array_pop($path);
@@ -323,62 +402,44 @@ class Handler extends \obray\base\SocketServerBaseHandler
         return false;
     }
 
-    public function setSessionsTypes(array $sessionType)
+    public function setSessionsHandler(string $key, string $sessionHandler)
     {
-        $this->sessionTypes = $sessionType;
+        $this->sessionHandler = $sessionHandler;
+        $this->sessionKey = $key;
     }
 
-    public function refreshSession($key, &$request)
+    public function findSession(\obray\http\Transport $request)
     {
-        $sessionType = $this->sessionTypes[$key];
-        $s = new $sessionType($key);
-        $this->sessions[$s->getSessionId()] = $s;
-        $request->setSessionId($key, $s->getSessionId());
-    }
-
-    public function getSession(string $key, \obray\http\Transport $request)
-    {
-        $sessionIds = $request->getSessions();
-        return $this->sessions[$sessionIds[$key]];
-    }
-
-    public function getSessions(\obray\http\Transport &$request)
-    {
-        if(empty($this->sessionTypes)) return;
-        forEach($this->sessionTypes as $key => $sessionType){
-            $cookie = $request->getCookie($key);
-            if($cookie && $sessionId = $cookie->getValue()){
-                if(empty($this->sessions[$sessionId])){
-                    $this->sessions[$sessionId] = new $sessionType($key, $sessionId);
+        print_r("Finding Session\n");
+        try {
+            print_r("Trying to get cookie header\n");
+            $cookies = $request->getHeaders('Cookie');
+            try {
+                print_r("Trying to get cookie value " . $this->sessionKey . "\n");
+                $cookie = $cookies->getPairValue($this->sessionKey);
+                if(!empty($this->sessions[$cookie])){
+                    print_r("Session found: " . $cookie . "\n");
+                    return $this->sessions[$cookie];
+                } else {
+                    print_r("No session found with: " . $cookie . "\n");
                 }
-                $sessionIds[$key] = $sessionId;
-                continue;
+            } catch (\Exception $e) {
+                print_r("valid session ID not found\n");
+                print_r($e->getMessage());
             }
-            $s = new $sessionType($key);
-            $this->sessions[$s->getSessionId()] = $s;
-            $sessionIds[$key] = $s->getSessionId();
+        } catch(\Exception $e) {
+            print_r("No cookie sent\n");
+            print_r($e->getMessage());
         }
-        $request->setSessions($sessionIds);
+        print_r("Session not found, creating new one\n");
+        $session = new $this->sessionHandler($this->sessionKey);
+        $this->sessions[$session->getId()] = $session;
+        return $this->sessions[$session->getId()];
     }
 
-    public function getSessionCookies(\obray\http\Transport $request)
+    public function getSessions(): array
     {
-        
-        $sessionIds = $request->getSessions();   
-        if(empty($sessionIds)) return [];
-        $requestCookies = [];
-        forEach($sessionIds as $id){
-            if(!$this->sessions[$id]->isOnClient()) {
-                $requestCookies[] = new \obray\http\Cookie($this->sessions[$id]->getKey(), $this->sessions[$id]->getSessionId(), [
-                    'expires' => $this->sessions[$id]->getExpires(),
-                    'secure' => $this->sessions[$id]->getSecure(),
-                    'httpOnly' => $this->sessions[$id]->getHttpOnly(),
-                    'sameSite' => $this->sessions[$id]->getSameSite(),
-                    'path' => $this->sessions[$id]->getPath()
-                ]);
-            }
-        }
-        return $requestCookies;
+        return $this->sessions;
     }
 
     public function onConnect(\obray\interfaces\SocketConnectionInterface $connection): void
@@ -388,6 +449,8 @@ class Handler extends \obray\base\SocketServerBaseHandler
 
     public function onConnected(\obray\interfaces\SocketConnectionInterface $connection): void
     {
+        $connection->setReadMethod(\obray\SocketConnection::READ_UNTIL_LINE_ENDING);
+        $connection->setEOL("\r\n");
         return;
     }
 
